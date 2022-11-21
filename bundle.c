@@ -330,15 +330,24 @@ out:
 
 
 /* Write the pack data to bundle_fd */
-static int write_pack_data(int bundle_fd, struct rev_info *revs, struct strvec *pack_options)
+static int write_pack_data(int bundle_fd, struct rev_info *revs, struct strvec *pack_options, const char* do_not_compress_hash)
 {
 	struct child_process pack_objects = CHILD_PROCESS_INIT;
 	int i;
 
-	strvec_pushl(&pack_objects.args,
-		     "pack-objects",
-		     "--stdout", "--thin", "--delta-base-offset",
-		     NULL);
+	if(do_not_compress_hash) {
+		strvec_pushl(&pack_objects.args,
+				"pack-objects",
+				"--do-not-compress", do_not_compress_hash,
+				"--stdout", "--thin", "--delta-base-offset",
+				NULL);
+	} else {
+		strvec_pushl(&pack_objects.args,
+				"pack-objects",
+				"--stdout", "--thin", "--delta-base-offset",
+				NULL);
+	}
+
 	strvec_pushv(&pack_objects.args, pack_options->v);
 	if (revs->filter.choice)
 		strvec_pushf(&pack_objects.args, "--filter=%s",
@@ -510,9 +519,22 @@ int create_bundle(struct repository *r, const char *path,
 	int bundle_to_stdout;
 	int ref_count = 0;
 	struct rev_info revs, revs_copy;
+	const char* do_not_compress;
 	int min_version = 2;
 	struct bundle_prerequisites_info bpi;
 	int i;
+
+	 /* see if the optional --do-not-compress argument was provided */
+	if(argc > 0 && !strcmp(argv[1], "--do-not-compress")) {
+		if(argc < 2) {
+			die_errno("expected a HASH argument after --do-not-compress");
+		}
+		do_not_compress = argv[2];
+		argc -= 2;
+		argv += 2;
+	} else {
+		do_not_compress = NULL;
+	}
 
 	/* init revs to list objects for pack-objects later */
 	save_commit_buffer = 0;
@@ -608,8 +630,9 @@ int create_bundle(struct repository *r, const char *path,
 	else if (ref_count < 0)
 		goto err;
 
+	printf("WRITING PACK DATA %s\n", do_not_compress);
 	/* write pack */
-	if (write_pack_data(bundle_fd, &revs_copy, pack_options))
+	if (write_pack_data(bundle_fd, &revs_copy, pack_options, do_not_compress))
 		goto err;
 
 	if (!bundle_to_stdout) {

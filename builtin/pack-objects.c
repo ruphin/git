@@ -272,6 +272,17 @@ static struct commit **indexed_commits;
 static unsigned int indexed_commits_nr;
 static unsigned int indexed_commits_alloc;
 
+static unsigned char no_compress_hash[20] = "\0";
+
+static int get_pack_compression_level(char *hash) {
+	if(memcmp(hash, no_compress_hash, 20)) {
+		return pack_compression_level;
+	} else {
+		fprintf(stderr, "Packing object %s uncompressed...\n", hash);
+		return 0;
+	}
+}
+
 static void index_commit_for_bitmap(struct commit *commit)
 {
 	if (indexed_commits_nr >= indexed_commits_alloc) {
@@ -310,13 +321,13 @@ static void *get_delta(struct object_entry *entry)
 	return delta_buf;
 }
 
-static unsigned long do_compress(void **pptr, unsigned long size)
+static unsigned long do_compress(void **pptr, unsigned long size, int compression_level)
 {
 	git_zstream stream;
 	void *in, *out;
 	unsigned long maxsize;
 
-	git_deflate_init(&stream, pack_compression_level);
+	git_deflate_init(&stream, compression_level);
 	maxsize = git_deflate_bound(&stream, size);
 
 	in = *pptr;
@@ -483,7 +494,7 @@ static unsigned long write_no_reuse_object(struct hashfile *f, struct object_ent
 	else if (entry->z_delta_size)
 		datalen = entry->z_delta_size;
 	else
-		datalen = do_compress(&buf, size);
+		datalen = do_compress(&buf, size, get_pack_compression_level(hash_to_hex(entry->idx.oid.hash)));
 
 	/*
 	 * The object header is a byte of 'type' followed by zero or
@@ -2731,8 +2742,8 @@ static void find_deltas(struct object_entry **list, unsigned *list_size,
 		 */
 		if (entry->delta_data && !pack_to_stdout) {
 			unsigned long size;
-
-			size = do_compress(&entry->delta_data, DELTA_SIZE(entry));
+			
+			size = do_compress(&entry->delta_data, DELTA_SIZE(entry), get_pack_compression_level(hash_to_hex(entry->idx.oid.hash)));
 			if (size < (1U << OE_Z_DELTA_BITS)) {
 				entry->z_delta_size = size;
 				cache_lock();
@@ -4172,6 +4183,7 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	struct strvec rp = STRVEC_INIT;
 	int rev_list_unpacked = 0, rev_list_all = 0, rev_list_reflog = 0;
 	int rev_list_index = 0;
+	const char* no_compress_hash_arg = NULL;
 	int stdin_packs = 0;
 	struct string_list keep_pack_list = STRING_LIST_INIT_NODUP;
 	struct po_filter_data pfd = { .have_revs = 0 };
@@ -4254,6 +4266,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 				N_("ignore this pack")),
 		OPT_INTEGER(0, "compression", &pack_compression_level,
 			    N_("pack compression level")),
+		OPT_STRING(0, "do-not-compress", &no_compress_hash_arg, N_("SHA1"),
+			   N_("do not compress the given object in the pack")),
 		OPT_SET_INT(0, "keep-true-parents", &grafts_replace_parents,
 			    N_("do not hide commits by grafts"), 0),
 		OPT_BOOL(0, "use-bitmap-index", &use_bitmap_index,
@@ -4384,6 +4398,12 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		die(_("options '%s' and '%s' cannot be used together"), "--keep-unreachable", "--unpack-unreachable");
 	if (!rev_list_all || !rev_list_reflog || !rev_list_index)
 		unpack_unreachable_expiration = 0;
+
+	if(no_compress_hash_arg) {
+		for(size_t i=0,l=strlen(no_compress_hash_arg); i < l; ++i) {
+			no_compress_hash[i] = no_compress_hash_arg[i];
+		}
+	}
 
 	if (pfd.have_revs && pfd.revs.filter.choice) {
 		if (!pack_to_stdout)
